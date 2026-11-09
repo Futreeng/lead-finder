@@ -121,15 +121,38 @@ test("no website at all: nothing is fetched", async () => {
   assert.equal(e.checkError, "no website listed");
 });
 
-test("profile link rules", () => {
+test("profile link rules: attorney folders win over team folders", () => {
   const links = extractLinks(
     `<a href="/attorneys/jane-doe">a</a><a href="/about/our-team/sam-lee/">b</a><a href="/team/overview">c</a>
      <a href="/attorneys/123">d</a><a href="/blog/some-post">e</a><a href="/attorneys/jane-doe/bio">f</a>`,
     "https://x.test/",
   );
   const p = findProfileLinks(links, "x.test");
-  assert.deepEqual(p.paths, ["/about/our-team/sam-lee", "/attorneys/jane-doe"]);
+  assert.deepEqual(p.paths, ["/attorneys/jane-doe"]);
+  assert.equal(p.mayIncludeStaff, false);
+});
+
+test("profile link rules: team folders are a flagged fallback, /staff/ never counts", () => {
+  const links = extractLinks(
+    `<a href="/about/our-team/sam-lee/">a</a><a href="/team/overview">b</a><a href="/staff/pat-jones/">c</a>`,
+    "https://x.test/",
+  );
+  const p = findProfileLinks(links, "x.test");
+  assert.deepEqual(p.paths, ["/about/our-team/sam-lee"]);
   assert.equal(p.mayIncludeStaff, true);
+});
+
+test("regression: staff profiles under /staff/ do not inflate the attorney count", async () => {
+  // Same URL shape as a real Akron firm whose menu links 10 /attorneys/ and 10 /staff/ profiles.
+  const nav = `${profileLinks("attorneys", 10)}\n${profileLinks("staff", 10)}`;
+  const fetcher = new FakeFetcher({
+    "https://tenfirm.test/": page(`<nav><a href="/attorneys/">Attorneys</a>${nav}</nav><p>Estate planning and probate.</p>`),
+    "https://tenfirm.test/attorneys/": page(`<nav>${nav}</nav>${profileLinks("attorneys", 10)}`),
+  });
+  const e = await enrichCandidate({ firm: "Ten", website: "https://tenfirm.test/", source: "test" }, fetcher, s);
+  assert.equal(e.attorneyCount, 10);
+  assert.equal(e.attorneyCountMayIncludeStaff, false);
+  assert.deepEqual(decide(e, s), { keep: true, reason: "Practice and size match" });
 });
 
 test("Esq. names are counted once each", () => {

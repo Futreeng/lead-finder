@@ -23,14 +23,15 @@ const ATTORNEY_DIRS = new Set([
   "our-professionals",
 ]);
 
-/** Folders that may also list paralegals and office staff. */
+/**
+ * Folders that may list attorneys AND paralegals or office staff together.
+ * Staff-only folders such as /staff/ are deliberately not here: people in them are never attorneys.
+ */
 const MIXED_DIRS = new Set([
   "people",
   "our-people",
   "team",
   "our-team",
-  "staff",
-  "our-staff",
   "meet-the-team",
   "meet-our-team",
 ]);
@@ -81,10 +82,15 @@ export interface ProfileLinks {
   mayIncludeStaff: boolean;
 }
 
-/** Same-site links shaped like /attorneys/jane-doe or /about/our-team/jane-doe. */
+/**
+ * Same-site links shaped like /attorneys/jane-doe or /about/our-team/jane-doe.
+ * When a site has attorney-only profile folders (/attorneys/, /lawyers/), only those are counted,
+ * so staff pages elsewhere never inflate the number. Mixed "team" folders are used only as a
+ * fallback, and are flagged because they may include staff.
+ */
 export function findProfileLinks(links: Link[], siteDomain: string): ProfileLinks {
-  const paths = new Set<string>();
-  let mayIncludeStaff = false;
+  const attorneyPaths = new Set<string>();
+  const mixedPaths = new Set<string>();
   for (const l of links) {
     if (!l.url || domainOf(l.url.href) !== siteDomain) continue;
     const segs = l.url.pathname
@@ -100,10 +106,10 @@ export function findProfileLinks(links: Link[], siteDomain: string): ProfileLink
     if (NOT_A_PERSON.has(slug)) continue;
     // Person pages are almost always "first-last" style; this skips things like /team/overview.
     if (!/^[a-z][a-z0-9.'_-]*[-_][a-z0-9.'_-]*[a-z0-9]$/.test(slug)) continue;
-    paths.add("/" + segs.join("/"));
-    if (isMixedDir) mayIncludeStaff = true;
+    (isAttorneyDir ? attorneyPaths : mixedPaths).add("/" + segs.join("/"));
   }
-  return { paths: [...paths].sort(), mayIncludeStaff };
+  if (attorneyPaths.size > 0) return { paths: [...attorneyPaths].sort(), mayIncludeStaff: false };
+  return { paths: [...mixedPaths].sort(), mayIncludeStaff: mixedPaths.size > 0 };
 }
 
 /** Distinct "Name, Esq." mentions, a fallback when a site has no attorney profile pages. */
@@ -197,9 +203,8 @@ export async function enrichCandidate(c: Candidate, fetcher: Fetcher, s: Setting
   const homeLinks = extractLinks(home.body, home.url);
   const homeText = htmlToText(home.body);
   const terms = new Set(matchKeywords(`${pageTitle(home.body)} ${homeText}`, s.keywords));
-  const profile = findProfileLinks(homeLinks, domain);
-  const profilePaths = new Set(profile.paths);
-  let mayIncludeStaff = profile.mayIncludeStaff;
+  // Links from the homepage and the attorneys page, counted together once at the end.
+  const personLinks: Link[] = [...homeLinks];
   const esqNames = new Set(findEsqNames(homeText));
   e.phone ||= firstTel(homeLinks);
   e.publicEmail ||= firstMailto(homeLinks);
@@ -215,9 +220,7 @@ export async function enrichCandidate(c: Candidate, fetcher: Fetcher, s: Setting
       attorneyPageUrl = r.url;
       const links = extractLinks(r.body, r.url);
       const text = htmlToText(r.body);
-      const p = findProfileLinks(links, domain);
-      p.paths.forEach((x) => profilePaths.add(x));
-      mayIncludeStaff ||= p.mayIncludeStaff;
+      personLinks.push(...links);
       findEsqNames(text).forEach((n) => esqNames.add(n));
       matchKeywords(text, s.keywords).forEach((t) => terms.add(t));
       e.phone ||= firstTel(links);
@@ -242,13 +245,14 @@ export async function enrichCandidate(c: Candidate, fetcher: Fetcher, s: Setting
 
   e.practiceTerms = s.keywords.filter((k) => terms.has(k));
 
-  if (profilePaths.size > 0) {
-    e.attorneyCount = profilePaths.size;
-    e.attorneyCountMayIncludeStaff = mayIncludeStaff;
+  const profile = findProfileLinks(personLinks, domain);
+  if (profile.paths.length > 0) {
+    e.attorneyCount = profile.paths.length;
+    e.attorneyCountMayIncludeStaff = profile.mayIncludeStaff;
     const where = attorneyPageUrl ? `on ${attorneyPageUrl}` : "on the homepage";
     e.attorneyCountNote =
-      `Attorney count estimated: ${profilePaths.size} profile link(s) ${where}` +
-      (mayIncludeStaff ? ", may include non-attorney staff" : "");
+      `Attorney count estimated: ${profile.paths.length} profile link(s) ${where}` +
+      (profile.mayIncludeStaff ? ", may include non-attorney staff" : "");
   } else if (esqNames.size > 0) {
     e.attorneyCount = esqNames.size;
     e.attorneyCountNote = `Attorney count estimated: ${esqNames.size} name(s) written with "Esq."`;
