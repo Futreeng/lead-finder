@@ -1,0 +1,17 @@
+node_modules/
+dist/
+
+# Prospect lists hold real firm data. Never commit them.
+output/
+*.prospects.csv
+
+# Your own seed lists and exclusion lists stay on your machine.
+seeds/
+exclude/
+
+# Off switch file (see README). Local only.
+STOP
+
+.env
+.DS_Store
+Thumbs.db
