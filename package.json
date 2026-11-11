@@ -2,7 +2,7 @@
   "name": "lead-finder",
   "version": "0.1.0",
   "private": true,
-  "description": "Finds small estate planning law firms from a seed list and OpenStreetMap, checks their public websites politely, and writes a prospect list for human review. Research only: it never contacts anyone.",
+  "description": "Local outreach app and command line tool for Futreeng: finds small estate planning law firms, keeps the tracker, drafts emails for approval, and builds speed check reports. Nothing is ever sent automatically.",
   "type": "module",
   "bin": {
     "lead-finder": "dist/src/cli.js"
@@ -12,7 +12,8 @@
     "build": "node scripts/clean.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node scripts/run-tests.mjs",
-    "start": "node dist/src/cli.js"
+    "start": "npm run build && node dist/src/app/main.js",
+    "cli": "node dist/src/cli.js"
   },
   "engines": {
     "node": ">=20"

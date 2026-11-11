@@ -1,16 +1,27 @@
 # lead-finder
 
-Builds a list of small estate planning law firms (2 to 10 attorneys) for Futreeng's client acquisition work.
-It reads public web pages and writes a CSV that matches the prospect tracker in the training packet.
+Futreeng's all-in-one outreach tool for small estate planning law firms (2 to 10 attorneys).
+It runs on one computer and covers the whole process from the training packet:
 
-**It never contacts anyone.** No emails, no form submissions, no calls. Every row it writes has the status
-`Researched` and a note that a person must review it before any outreach.
+1. **Find firms**: looks up law offices and checks each firm's own website politely.
+2. **Review**: every firm it finds waits in a review queue until a person accepts or rejects it.
+3. **Tracker**: one list of every firm, its status, last contact and next step. Exports to CSV for Google Sheets.
+4. **Emails**: drafts the first email, follow-up, report cover note and call recap from the packet templates.
+5. **Speed check**: records the firm's permission, logs the measured times, and builds the one-page report.
+6. **Numbers**: the weekly counts and rates for the Friday review.
+
+**It never contacts anyone.** No emails, no form submissions, no calls. A person copies each approved email
+into Outlook and sends it, then marks it sent in the app.
 
 ## Human review and the off switch (mandatory)
 
-- **Human in the loop:** a person reviews every row before any firm is contacted. The tool only researches.
-- **Off switch:** create an empty file named `STOP` in the project folder (or set `LEAD_FINDER_DISABLED=1`).
-  The tool will not start, and a run in progress stops before its next web request.
+- **Review queue:** nothing found by a search can be emailed until a person accepts it.
+- **Approver PIN:** emails and reports cannot be copied or marked sent until the approver types the PIN.
+  A draft still holding a `[placeholder]`, or missing the mailing address or the opt-out line, cannot be approved.
+- **Permission first:** a speed check cannot be logged until the firm's permission (who, when, how) is recorded.
+- **Opt-outs:** an opted-out firm gets no new drafts, its unsent drafts are deleted, and only the approver can undo it.
+- **Off switch:** the Off switch button in the app, or an empty file named `STOP` in the project folder
+  (or `LEAD_FINDER_DISABLED=1`), blocks every website check, including one already running.
   Delete the `STOP` file to turn it back on.
 
 ## Setup
@@ -26,7 +37,27 @@ npm test
 
 `npm test` builds the project and runs the test suite. It uses local test servers only, no internet.
 
-## Use
+## The app
+
+```bash
+npm start
+```
+
+This builds the project, starts the app, and opens it in your browser at `http://127.0.0.1:4321/`.
+Only this computer can open it. Press Ctrl+C in the terminal to stop it.
+
+First time: open **Settings**, fill in your name, phone or email, and mailing address, and set the approver PIN.
+
+- Data is saved in `data/lead-finder.json` with a daily copy in `data/backups/`. The `data/` folder is never committed.
+- If the data file is ever damaged, the app refuses to start rather than overwrite it. Copy the newest backup over it.
+- Already have a prospects CSV from the command line tool or a tracker export? Use **Tracker, Import CSV**.
+  Firms marked `Opted out` in the file stay opted out.
+- Other options: `npm start -- --no-open` (do not open the browser), `npm start -- --port=5000`.
+
+## Command line tool
+
+The same finder also runs without the app and writes CSV files.
+
 
 ### 1. With a seed list (main way)
 
@@ -130,7 +161,15 @@ one practice areas page. At most 3 pages per firm.
 ## Project layout
 
 ```text
-src/cli.ts           entry point
+src/app/main.ts      app entry point (npm start)
+src/app/server.ts    local web server (127.0.0.1 only, token and host checks)
+src/app/pipeline.ts  every rule: review queue, PIN approval, permission, opt-outs
+src/app/templates.ts email drafts and the speed check report
+src/app/store.ts     data file with atomic saves and daily backups
+src/app/metrics.ts   weekly numbers
+public/              the app's page (plain HTML, CSS and JavaScript)
+src/find.ts          finding pipeline shared by the app and the command line
+src/cli.ts           command line entry point
 src/run.ts           options and the overall run
 src/killswitch.ts    STOP file and LEAD_FINDER_DISABLED off switch
 src/http.ts          polite fetcher (robots.txt, delays, size cap, off switch before every request)

@@ -1,8 +1,9 @@
 node_modules/
 dist/
 
-# Prospect lists hold real firm data. Never commit them.
+# Prospect lists and the app's data hold real firm data. Never commit them.
 output/
+data/
 *.prospects.csv
 
 # Your own seed lists and exclusion lists stay on your machine.

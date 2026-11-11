@@ -1,15 +1,13 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { AGENT_TOKEN, MIN_DELAY_MS, defaultSettings, type Settings } from "./config.js";
+import { MIN_DELAY_MS, defaultSettings, type Settings } from "./config.js";
 import { toCsv } from "./csv.js";
-import { enrichCandidate } from "./enrich.js";
-import { applyExclusions, decide, dedupe, parseExclusions } from "./filter.js";
-import { PoliteFetcher, type Fetcher } from "./http.js";
-import { StoppedError, assertNotStopped, stopReason, type StopOptions } from "./killswitch.js";
-import { DEFAULT_OVERPASS_URL, fetchOsmCandidates, parseNear } from "./sources/osm.js";
-import { parseSeed } from "./sources/seed.js";
+import { parseExclusions } from "./filter.js";
+import { findFirms } from "./find.js";
+import type { Fetcher } from "./http.js";
+import { stopReason, type StopOptions } from "./killswitch.js";
+import { parseNear, type Near } from "./sources/osm.js";
 import { PROSPECT_HEADER, SKIPPED_HEADER, toProspectRow, toSkippedRow } from "./tracker.js";
-import type { Candidate } from "./types.js";
 
 export const USAGE = `lead-finder: builds a prospect list of small estate planning law firms for human review.
 It only reads public web pages. It never sends emails, fills in forms, or contacts anyone.
@@ -198,52 +196,20 @@ export async function run(argv: string[], deps: RunDeps = {}): Promise<RunResult
     result.exitCode = 1;
     return result;
   }
-  const stopCheck = () => assertNotStopped(stopOpts);
-
-  // 1. Gather candidates.
-  let candidates: Candidate[] = [];
+  // 1. Read every input file before touching the network.
+  let seedText: string | undefined;
+  let seedLabel: string | undefined;
   if (args.seed) {
     const path = resolve(cwd, args.seed);
-    let text: string;
     try {
-      text = readFileSync(path, "utf8");
+      seedText = readFileSync(path, "utf8");
+      seedLabel = basename(path);
     } catch {
       log(`Error: could not read seed file ${path}`);
       result.exitCode = 1;
       return result;
     }
-    const seed = parseSeed(text, basename(path));
-    seed.warnings.forEach((w) => log(`Warning: ${w}`));
-    log(`Seed list: ${seed.candidates.length} firm(s) from ${basename(path)}`);
-    candidates.push(...seed.candidates);
   }
-  if (args.near) {
-    try {
-      const near = parseNear(args.near, args.radiusKm);
-      const endpoint = env.OVERPASS_URL?.trim() || DEFAULT_OVERPASS_URL;
-      log(`OpenStreetMap: looking up law offices within ${near.radiusKm} km of ${near.lat},${near.lon} (one request to ${endpoint})`);
-      const osm = await fetchOsmCandidates(near, { endpoint, userAgent: s.userAgent, timeoutMs: 90_000, stopCheck });
-      log(`OpenStreetMap: ${osm.length} law office(s) with a name`);
-      candidates.push(...osm);
-    } catch (err) {
-      if (err instanceof StoppedError) {
-        log(err.message);
-        result.exitCode = 2;
-        result.stoppedBy = err.message;
-        return result;
-      }
-      log(`OpenStreetMap lookup failed: ${(err as Error).message}`);
-      if (!args.seed) {
-        result.exitCode = 1;
-        return result;
-      }
-      log("Continuing with the seed list only.");
-    }
-  }
-
-  // 2. Remove repeats and excluded firms.
-  const { kept: unique, duplicates } = dedupe(candidates);
-  if (duplicates > 0) log(`Removed ${duplicates} repeat(s).`);
   const excludedKeys = new Set<string>();
   for (const ex of args.exclude) {
     const path = resolve(cwd, ex);
@@ -255,47 +221,42 @@ export async function run(argv: string[], deps: RunDeps = {}): Promise<RunResult
       return result;
     }
   }
-  const { kept: toCheckAll, excluded } = applyExclusions(unique, excludedKeys);
-  if (excluded.length > 0) log(`Skipped ${excluded.length} firm(s) on the exclude list (already in tracker or opted out).`);
-  const toCheck = args.limit !== undefined ? toCheckAll.slice(0, args.limit) : toCheckAll;
-  if (toCheck.length < toCheckAll.length) log(`--limit ${args.limit}: checking ${toCheck.length} of ${toCheckAll.length}.`);
-
-  log(
-    `Checking ${toCheck.length} firm website(s): up to ${s.maxPagesPerSite} pages each plus robots.txt, ` +
-      `at least ${s.delayMs} ms between requests to the same site.`,
-  );
-  log("To stop at any time: create a file named STOP in this folder.");
-
-  // 3. Check each firm's website.
-  const fetcher =
-    deps.fetcher ??
-    new PoliteFetcher({
-      userAgent: s.userAgent,
-      agentToken: AGENT_TOKEN,
-      delayMs: s.delayMs,
-      timeoutMs: s.timeoutMs,
-      maxBytes: s.maxBytes,
-      stopCheck,
-    });
-
-  for (const [i, c] of toCheck.entries()) {
-    log(`[${i + 1}/${toCheck.length}] ${c.firm}${c.website ? ` (${c.website})` : ""}`);
+  let near: Near | undefined;
+  if (args.near) {
     try {
-      const e = await enrichCandidate(c, fetcher, s);
-      const d = decide(e, s);
-      if (d.keep) result.kept.push(toProspectRow(e, d));
-      else result.skipped.push(toSkippedRow(e, d));
-      log(`    ${d.keep ? "KEEP" : "SKIP"}: ${d.reason}`);
+      near = parseNear(args.near, args.radiusKm);
     } catch (err) {
-      if (err instanceof StoppedError) {
-        result.stoppedBy = err.message;
-        log(err.message);
-        break;
-      }
-      throw err;
+      log(`Error: ${(err as Error).message}`);
+      result.exitCode = 1;
+      return result;
     }
   }
-  if (fetcher instanceof PoliteFetcher) result.requests = fetcher.requestCount;
+
+  // 2. Find, check and decide.
+  const found = await findFirms({
+    seedText,
+    seedLabel,
+    near,
+    overpassUrl: env.OVERPASS_URL,
+    exclude: excludedKeys,
+    limit: args.limit,
+    settings: s,
+    stopOpts,
+    fetcher: deps.fetcher,
+    log,
+  });
+  if (found.error) {
+    result.exitCode = 1;
+    return result;
+  }
+  result.kept = found.kept.map(({ e, d }) => toProspectRow(e, d));
+  result.skipped = found.skipped.map(({ e, d }) => toSkippedRow(e, d));
+  result.requests = found.requests;
+  result.stoppedBy = found.stoppedBy;
+  if (found.stoppedBy && found.kept.length + found.skipped.length === 0) {
+    result.exitCode = 2;
+    return result;
+  }
 
   // 4. Output.
   if (args.dryRun) {
